@@ -1,6 +1,9 @@
 import { defineConfig } from 'vite';
 
-export default defineConfig({
+// base is '/inkbattle/' for the production build (GitHub Pages project site)
+// but '/' during dev so the local server/preview works at the root.
+export default defineConfig(({ command }) => ({
+  base: command === 'build' ? '/inkbattle/' : '/',
   server: {
     host: true,
     port: 5173,
@@ -9,4 +12,4 @@ export default defineConfig({
     target: 'es2020',
     outDir: 'dist',
   },
-});
+}));

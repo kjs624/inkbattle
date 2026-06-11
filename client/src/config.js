@@ -1,9 +1,10 @@
-// Where to reach the game server.
-// - In production (Vercel) set VITE_SERVER_URL to your Render/Fly.io server URL.
-// - In local dev it falls back to the local server on :3001.
-const fromEnv = import.meta.env.VITE_SERVER_URL;
+// Supabase connection. The anon key is a public (publishable) key — safe to
+// ship in client code. Set these as Vite env vars (build time) or a local
+// .env file. Realtime broadcast/presence need no database tables.
+export const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || '';
+export const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
 
-export const SERVER_URL =
-  fromEnv && fromEnv.length > 0
-    ? fromEnv
-    : `${location.protocol}//${location.hostname}:3001`;
+// Single shared room/channel for the demo.
+export const ROOM = 'inkbattle';
+
+export const HAS_SUPABASE = SUPABASE_URL.length > 0 && SUPABASE_ANON_KEY.length > 0;

@@ -4,11 +4,13 @@
 플레이어들이 같은 맵에 접속해 제한 시간 동안 자기 팀 잉크로 바닥을 더 많이 칠한 팀이 승리합니다.
 
 - **렌더링**: Three.js
-- **실시간 통신**: Socket.IO (WebSocket)
-- **서버**: Node.js + Socket.IO **권위적 서버(authoritative server)** — 격자(grid) 기반 잉크/점령률/순위를 서버가 관리
-- **클라이언트**: Vite
+- **실시간 통신**: Supabase Realtime (WebSocket broadcast/presence)
+- **권위 구조**: **호스트 권위(host-authoritative)** — 방에 가장 먼저 들어온 플레이어의 브라우저가 격자(grid) 기반 잉크·점령률·순위·판정을 돌리고 그 상태를 다른 플레이어에게 브로드캐스트. 호스트가 나가면 다음 플레이어가 자동 인계(잉크는 유지).
+- **클라이언트**: Vite (정적 빌드 → 어디든 호스팅 가능, 별도 상시 서버 불필요)
 
 > 학습 / 포트폴리오용 토이 프로젝트입니다. 자세한 설계는 기획서를 참고하세요.
+>
+> 📦 `server/` 폴더에는 **원래 설계인 Node.js + Socket.IO 권위적 *서버* 버전**이 그대로 들어 있습니다(로컬 실행/학습용). 배포 버전은 서버리스로 돌리기 위해 동일한 게임 로직(`game-core.js`)을 호스트 클라이언트에서 실행합니다.
 
 ## 핵심 규칙
 
@@ -17,52 +19,51 @@
 - 제한 시간(기본 180초) 종료 시 팀별 점령률로 승패를, 개인 점수(칠한 셀 · 처치 · 사망)로 순위를 매깁니다.
 - 매치가 끝나면 결과를 보여준 뒤 자동으로 다음 매치가 시작됩니다.
 
-## 구조 (모노레포)
+## 구조
 
 ```
 inkbattle/
-├─ client/      # Three.js + Vite 프론트엔드  → Vercel 배포
+├─ client/                # Three.js + Vite 프론트엔드 (정적 호스팅 → 배포 대상)
 │  └─ src/
-├─ server/      # Node.js + Socket.IO 권위적 서버 → Render 배포
-├─ render.yaml  # 서버용 Render 블루프린트
+│     ├─ game-core.js     # 권위적 게임 로직(호스트 클라이언트가 실행)
+│     ├─ net.js           # Supabase Realtime 네트워킹 + 호스트 선출/인계
+│     └─ ...
+├─ server/                # (선택) 원래 설계: Node + Socket.IO 권위적 *서버* — 로컬/학습용
 └─ README.md
 ```
 
-서버리스 플랫폼(Vercel)은 상시 WebSocket 서버를 띄울 수 없어, **프론트는 Vercel, 서버는 Render**로 나눠 배포합니다.
-
 ## 로컬 실행
 
-두 개의 터미널이 필요합니다.
+Supabase 무료 프로젝트의 **Project URL**과 **anon public 키**가 필요합니다
+(Supabase 대시보드 → Project Settings → API). Realtime broadcast/presence는 DB 테이블이 필요 없습니다.
 
 ```bash
-# 1) 서버
-cd server
-npm install
-npm start          # http://localhost:3001
-
-# 2) 클라이언트
 cd client
 npm install
-npm run dev        # http://localhost:5173
+cp .env.example .env     # .env 안에 VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY 입력
+npm run dev              # http://localhost:5173
 ```
 
-브라우저 탭을 여러 개 열어 같은 맵에서 함께 플레이할 수 있습니다.
-(클라이언트는 기본적으로 `http://<host>:3001` 서버에 접속합니다.)
+브라우저 탭을 여러 개 열면 같은 방에서 함께 플레이됩니다. 가장 먼저 입장한 탭이 호스트가 됩니다.
 
-## 배포
+> 원래의 Socket.IO **서버** 버전으로 돌려보고 싶다면 `cd server && npm install && npm start` (http://localhost:3001).
+> 단, 그 버전을 쓰려면 클라이언트의 네트워킹을 Socket.IO로 되돌려야 합니다(git 히스토리 참고).
 
-### 1) 서버 → Render
-1. 이 저장소를 GitHub에 푸시합니다.
-2. Render 대시보드 → **New → Blueprint** → 저장소 연결 (`render.yaml` 자동 인식).
-3. 배포 완료 후 서버 URL을 복사합니다. 예: `https://inkbattle-server.onrender.com`
+## 배포 (정적 호스팅)
 
-### 2) 클라이언트 → Vercel
-1. Vercel → **New Project** → 이 저장소 import.
-2. **Root Directory**를 `client` 로 지정 (Framework: Vite 자동 감지).
-3. 환경변수 `VITE_SERVER_URL` 에 1)의 서버 URL을 입력합니다.
-4. Deploy.
+클라이언트는 정적 빌드물이라 Supabase 키만 빌드 시 주입하면 어디든 올릴 수 있습니다.
 
-> Render 무료 플랜은 일정 시간 미사용 시 슬립 상태가 되어 첫 접속이 느릴 수 있습니다.
+**환경변수 (빌드 시점):**
+- `VITE_SUPABASE_URL` = Supabase Project URL
+- `VITE_SUPABASE_ANON_KEY` = anon public 키
+
+### GitHub Pages
+`client/vite.config.js`의 `base`가 `/inkbattle/`로 설정되어 있습니다. 빌드 후 `client/dist`를
+`gh-pages` 브랜치에 올리고 저장소 Settings → Pages에서 해당 브랜치를 지정하면 됩니다.
+
+### Vercel (선택)
+**New Project** → 이 저장소 import → **Root Directory = `client`** → 위 환경변수 2개 추가 → Deploy.
+(이 경우 `vite.config.js`의 `base`를 `/` 로 바꿔야 합니다.)
 
 ## 개발 로드맵 (기획서 기준)
 

@@ -94,9 +94,9 @@ function onResize() {
 }
 
 // ---- networking glue -------------------------------------------------------
-net.on('open', () => { ui.setConn(true); ui.setLobbyStatus('서버 연결됨 · 입장 가능'); ui.setStartEnabled(true); });
-net.on('close', () => { ui.setConn(false); if (!joined) ui.setLobbyStatus('서버 연결 끊김 · 재연결 중…', true); });
-net.on('error', () => { if (!joined) ui.setLobbyStatus('서버에 연결할 수 없습니다. 서버 주소를 확인하세요.', true); });
+net.on('open', () => { ui.setConn(true); ui.setLobbyStatus('연결됨 · 입장 가능'); ui.setStartEnabled(true); });
+net.on('close', () => { ui.setConn(false); if (!joined) ui.setLobbyStatus('연결 끊김 · 재연결 중…', true); });
+net.on('error', (e) => { if (!joined) ui.setLobbyStatus((e && e.message) || '연결할 수 없습니다.', true); });
 
 ui.setStartEnabled(false);
 ui.onStart((name) => {
