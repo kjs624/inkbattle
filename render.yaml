@@ -1,0 +1,16 @@
+# Render Blueprint for the Ink Battle authoritative game server.
+# In the Render dashboard: New > Blueprint > connect this repo. Render reads
+# this file, builds the `server` folder, and runs the Socket.IO server.
+services:
+  - type: web
+    name: inkbattle-server
+    runtime: node
+    rootDir: server
+    plan: free
+    buildCommand: npm install
+    startCommand: node index.js
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: "20"
