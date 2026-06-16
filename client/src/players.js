@@ -1,7 +1,10 @@
 import * as THREE from 'three';
-import { TEAM_COLORS } from './constants.js';
+import { slotColorHex } from './constants.js';
 
-function makeNameSprite(name, hex) {
+const BASE_SCALE = 0.6;   // smaller characters (v2)
+const SQUID_SCALE = 0.42; // squid form is smaller still
+
+function makeNameSprite(name) {
   const canvas = document.createElement('canvas');
   canvas.width = 256;
   canvas.height = 64;
@@ -18,43 +21,42 @@ function makeNameSprite(name, hex) {
   tex.minFilter = THREE.LinearFilter;
   const mat = new THREE.SpriteMaterial({ map: tex, depthTest: false, transparent: true });
   const sprite = new THREE.Sprite(mat);
-  sprite.scale.set(4, 1, 1);
-  sprite.position.y = 3.1;
+  sprite.scale.set(3, 0.75, 1);
+  sprite.position.y = 2.2;
   return sprite;
 }
 
-// One avatar: a capsule body, a "nose" cone showing facing/aim, a ground ring.
-function buildAvatar(team, isSelf, name) {
+// One avatar: a scalable body (capsule + eyes + nose + ground ring) plus an
+// unscaled name sprite, so the name stays readable when the body shrinks.
+function buildAvatar(slot, isSelf, name) {
   const group = new THREE.Group();
-  const color = TEAM_COLORS[team];
+  const body = new THREE.Group();
+  group.add(body);
 
-  const body = new THREE.Mesh(
+  const color = slotColorHex(slot);
+
+  const capsule = new THREE.Mesh(
     new THREE.CapsuleGeometry(0.7, 1.1, 6, 12),
     new THREE.MeshStandardMaterial({ color, roughness: 0.5, metalness: 0.1 })
   );
-  body.position.y = 1.2;
-  body.castShadow = true;
-  group.add(body);
+  capsule.position.y = 1.2;
+  capsule.castShadow = true;
+  body.add(capsule);
 
-  // Eyes give a sense of facing direction (+Z is forward).
   const eyeMat = new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0x222222 });
   for (const sx of [-0.28, 0.28]) {
     const eye = new THREE.Mesh(new THREE.SphereGeometry(0.16, 10, 10), eyeMat);
     eye.position.set(sx, 1.55, 0.6);
-    group.add(eye);
+    body.add(eye);
   }
 
   const nose = new THREE.Mesh(
     new THREE.ConeGeometry(0.32, 0.9, 14),
-    new THREE.MeshStandardMaterial({
-      color,
-      emissive: color,
-      emissiveIntensity: isSelf ? 0.55 : 0.3,
-    })
+    new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: isSelf ? 0.55 : 0.3 })
   );
   nose.rotation.x = Math.PI / 2;
   nose.position.set(0, 1.2, 1.05);
-  group.add(nose);
+  body.add(nose);
 
   const ring = new THREE.Mesh(
     new THREE.RingGeometry(0.95, 1.15, 24),
@@ -62,57 +64,63 @@ function buildAvatar(team, isSelf, name) {
   );
   ring.rotation.x = -Math.PI / 2;
   ring.position.y = 0.05;
-  group.add(ring);
+  body.add(ring);
 
-  group.add(makeNameSprite(name, color));
+  body.scale.setScalar(BASE_SCALE);
+  group.userData.body = body;
+  group.add(makeNameSprite(name || 'P'));
   return group;
+}
+
+function applyForm(p) {
+  const body = p.group.userData.body;
+  const target = p.squid ? SQUID_SCALE : BASE_SCALE;
+  body.scale.setScalar(target);
 }
 
 export class Players {
   constructor(scene) {
     this.scene = scene;
-    this.map = new Map(); // id -> { group, team, target:{x,z,a}, dead }
+    this.map = new Map(); // id -> { group, slot, target, dead, squid }
   }
 
-  ensure(id, team, name, isSelf) {
+  ensure(id, slot, name, isSelf) {
     let p = this.map.get(id);
     if (!p) {
-      const group = buildAvatar(team, isSelf, name || 'P');
+      const group = buildAvatar(slot, isSelf, name || 'P');
       this.scene.add(group);
-      p = { group, team, target: { x: 0, z: 0, a: 0 }, dead: false, isSelf };
+      p = { group, slot, target: { x: 0, z: 0, a: 0 }, dead: false, squid: false, isSelf };
       this.map.set(id, p);
     }
     return p;
   }
 
-  // Update from a server state snapshot (array of compact player objects).
   syncFromState(list, selfId) {
     const seen = new Set();
     for (const s of list) {
       seen.add(s.id);
-      const p = this.ensure(s.id, s.t, s.n, s.id === selfId);
+      const p = this.ensure(s.id, s.sl, s.n, s.id === selfId);
       p.target.x = s.x;
       p.target.z = s.z;
       p.target.a = s.a;
       p.dead = s.d === 1;
-      if (s.id === selfId) continue; // self is locally controlled; skip remote pos
+      p.squid = s.sq === 1;
+      if (s.id === selfId) continue; // self is locally controlled
+      applyForm(p);
       p.group.visible = !p.dead;
     }
-    // Remove players no longer present.
     for (const id of [...this.map.keys()]) {
       if (!seen.has(id)) this.remove(id);
     }
   }
 
-  // Smoothly move remote avatars toward their latest target each frame.
   interpolate(dt, selfId) {
-    const k = 1 - Math.pow(0.0015, dt); // frame-rate independent smoothing
+    const k = 1 - Math.pow(0.0015, dt);
     for (const [id, p] of this.map) {
       if (id === selfId) continue;
       const g = p.group;
       g.position.x += (p.target.x - g.position.x) * k;
       g.position.z += (p.target.z - g.position.z) * k;
-      // Shortest-arc angle lerp.
       let da = p.target.a - g.rotation.y;
       while (da > Math.PI) da -= Math.PI * 2;
       while (da < -Math.PI) da += Math.PI * 2;
@@ -120,9 +128,11 @@ export class Players {
     }
   }
 
-  setSelfTransform(selfId, x, z, a, y = 0) {
+  setSelfTransform(selfId, x, z, a, y = 0, squid = false) {
     const p = this.map.get(selfId);
     if (!p) return;
+    p.squid = squid;
+    applyForm(p);
     p.group.position.set(x, y, z);
     p.group.rotation.y = a;
     p.group.visible = !p.dead;

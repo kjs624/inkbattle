@@ -5,7 +5,10 @@ import { UI } from './ui.js';
 import { Input } from './input.js';
 import { InkFloor } from './inkfloor.js';
 import { Players } from './players.js';
-import { DEFAULT_CONFIG, TEAM_COLORS, EMPTY, PURPLE } from './constants.js';
+import { DEFAULT_CONFIG, EMPTY, slotColorHex } from './constants.js';
+import {
+  BASE_SPEED, SPEED_OWN_INK, SQUID_SPEED_MULT, MAX_HP, SHOOT_RANGE, SHOOT_COOLDOWN,
+} from './gameconst.js';
 
 const root = document.getElementById('app');
 const ui = new UI(root);
@@ -13,16 +16,16 @@ const net = new Net();
 
 let cfg = { ...DEFAULT_CONFIG };
 let selfId = null;
-let started = false;       // render loop running
-let joined = false;        // received init
+let started = false;
+let joined = false;
 
-// Local authoritative-ish state for our own avatar.
+// Local state for our own avatar (FFA: slot is our color/identity).
 const self = {
   x: 0, z: 0, y: 0, vy: 0, yaw: 0,
-  team: PURPLE, dead: false, wasDead: false,
-  cells: 0, kills: 0, deaths: 0, score: 0,
+  slot: 1, hp: MAX_HP, dead: false, squid: false,
+  cells: 0, kills: 0, deaths: 0,
 };
-let serverSelfPos = { x: 0, z: 0 }; // last server position (for respawn snap)
+let serverSelfPos = { x: 0, z: 0 };
 let lastFire = 0;
 let inputAccum = 0;
 
@@ -99,27 +102,24 @@ net.on('close', () => { ui.setConn(false); if (!joined) ui.setLobbyStatus('연�
 net.on('error', (e) => { if (!joined) ui.setLobbyStatus((e && e.message) || '연결할 수 없습니다.', true); });
 
 ui.setStartEnabled(false);
-ui.onStart((name) => {
-  net.join(name);
-});
+ui.onStart((name) => { net.join(name); });
 
 net.on('init', (data) => {
   selfId = data.selfId;
   cfg = { ...cfg, ...data.config };
   if (!started) { buildScene(); started = true; requestAnimationFrame(loop); }
 
-  self.team = data.you.team;
+  self.slot = data.you.slot;
+  self.hp = data.you.hp ?? MAX_HP;
   self.x = data.you.x; self.z = data.you.z; self.y = 0; self.vy = 0;
-  self.yaw = self.team === PURPLE ? 0 : Math.PI;
-  input.yaw = self.yaw;
-  self.dead = false; self.wasDead = false;
+  self.yaw = 0; input.yaw = 0;
+  self.dead = false; self.squid = false;
 
   floor.applySnapshot(data.grid);
-  players.ensure(selfId, self.team, '나', true);
+  players.ensure(selfId, self.slot, '나', true);
   players.syncFromState(data.players, selfId);
-  ui.setTerritory(data.match.territory);
-  ui.setLeaderboard(data.match.leaderboard, selfId);
-  ui.setTimer(data.match.timeLeft, data.match.phase);
+  updateMatchUI(data.match);
+  ui.setHp(self.hp, MAX_HP);
 
   joined = true;
   ui.enterGame();
@@ -132,6 +132,8 @@ net.on('state', (data) => {
   if (me) {
     serverSelfPos = { x: me.x, z: me.z };
     self.cells = me.c; self.kills = me.k; self.deaths = me.de;
+    self.hp = me.h;
+    ui.setHp(self.hp, MAX_HP);
     const nowDead = me.d === 1;
     if (nowDead && !self.dead) onSelfDied();
     if (!nowDead && self.dead) onSelfRespawn();
@@ -140,89 +142,40 @@ net.on('state', (data) => {
 });
 
 net.on('paint', (data) => {
-  if (!floor) return;
-  floor.applyDelta(data.cells);
-  ui.setTerritory(data.territory);
+  if (floor) floor.applyDelta(data.cells);
 });
 
-net.on('match', (data) => {
-  ui.setTimer(data.timeLeft, data.phase);
-  ui.setTerritory(data.territory);
-  ui.setLeaderboard(data.leaderboard, selfId);
-  const me = data.leaderboard.find((p) => p.id === selfId);
-  if (me) ui.setSelfStats({ cells: me.cells, kills: me.kills, deaths: me.deaths, score: me.score });
-  if (data.phase === 'result') ui.showResult(data, selfId);
-  else ui.hideResult();
-});
+net.on('match', (data) => { updateMatchUI(data); });
 
 net.on('matchStart', (data) => {
   if (floor && data.grid) floor.applySnapshot(data.grid);
-  ui.hideResult();
 });
 
 net.on('shotFx', (fx) => {
-  if (!projectiles || fx.id === selfId) return; // own shots are spawned locally
-  projectiles.spawn(fx.x, fx.z, fx.ex, fx.ez, TEAM_COLORS[fx.team]);
+  if (!projectiles || fx.id === selfId) return;
+  projectiles.spawn(fx.x, fx.z, fx.ex, fx.ez, slotColorHex(fx.slot));
 });
 
 net.on('left', (id) => { if (players) players.remove(id); });
 
-// Dev-only hook for headless verification (stripped from production builds).
-if (import.meta.env.DEV) {
-  window.__ink = {
-    get self() { return self; },
-    get joined() { return joined; },
-    fire() {
-      net.sendShoot(Math.sin(self.yaw), Math.cos(self.yaw));
-    },
-    cellCounts() {
-      if (!floor) return null;
-      const c = { 0: 0, 1: 0, 2: 0 };
-      for (const v of floor.cells) c[v]++;
-      return c;
-    },
-    info() {
-      return {
-        cam: camera && camera.position.toArray().map(n => +n.toFixed(1)),
-        sceneChildren: scene && scene.children.length,
-        tris: renderer && renderer.info.render.triangles,
-      };
-    },
-    floorInfo() {
-      if (!floor) return null;
-      return {
-        inScene: scene.children.includes(floor.mesh),
-        visible: floor.mesh.visible,
-        hasMap: !!floor.mesh.material.map,
-        pos: floor.mesh.position.toArray(),
-        outputColorSpace: renderer.outputColorSpace,
-      };
-    },
-    topDown() {
-      debugCam = true;
-      camera.position.set(0, 70, 0.01);
-      camera.lookAt(0, 0, 0);
-      return 'topdown';
-    },
-    resumeCam() { debugCam = false; return 'resumed'; },
-    get floor() { return floor; },
-    get scene() { return scene; },
-    get camera() { return camera; },
-    get input() { return input; },
-    look(yaw) { input.yaw = yaw; return yaw; },
-    sampleTexel() {
-      const d = floor.data;
-      return [d[0], d[1], d[2], d[3]];
-    },
-  };
+function updateMatchUI(match) {
+  if (!match) return;
+  const lb = match.leaderboard || [];
+  const total = match.total || (cfg.GRID * cfg.GRID);
+  const me = lb.find((p) => p.id === selfId);
+  const rank = me ? lb.findIndex((p) => p.id === selfId) + 1 : 0;
+  const coverage = me ? (me.cells / total) * 100 : 0;
+  ui.setTopStatus(coverage, rank, lb.length);
+  ui.setLeaderboard(lb, selfId);
+  if (me) ui.setSelfStats({ cells: me.cells, kills: me.kills, deaths: me.deaths });
 }
 
 function onSelfDied() {
-  ui.showBanner('<span class="big">💥</span>처치당했습니다! 부활 중…');
+  ui.showBanner('<span class="big">💥</span>처치당했습니다! 내 영역이 사라집니다…');
 }
 function onSelfRespawn() {
   self.x = serverSelfPos.x; self.z = serverSelfPos.z;
-  self.y = 0; self.vy = 0;
+  self.y = 0; self.vy = 0; self.hp = MAX_HP;
   ui.hideBanner();
 }
 
@@ -245,6 +198,7 @@ function loop(now) {
 
 function updateSelf(dt) {
   self.yaw = input.yaw;
+  self.squid = !!input.squid && !self.dead;
   const fwd = new THREE.Vector2(Math.sin(self.yaw), Math.cos(self.yaw));
   const right = new THREE.Vector2(Math.cos(self.yaw), -Math.sin(self.yaw));
 
@@ -255,11 +209,11 @@ function updateSelf(dt) {
     const len = Math.hypot(mx, mz);
     if (len > 1) { mx /= len; mz /= len; }
 
-    // Speed depends on the ink under our feet.
-    const team = floor.teamAtWorld(self.x, self.z);
-    let mult = 1;
-    if (team !== EMPTY) mult = team === self.team ? cfg.SPEED_OWN_INK : cfg.SPEED_ENEMY_INK;
-    const speed = cfg.BASE_SPEED * mult;
+    // Faster on your own ink; no slowdown elsewhere. Squid is faster still.
+    const onOwnInk = floor.slotAtWorld(self.x, self.z) === self.slot;
+    let mult = onOwnInk ? SPEED_OWN_INK : 1;
+    if (self.squid) mult *= SQUID_SPEED_MULT;
+    const speed = BASE_SPEED * mult;
 
     self.x += mx * speed * dt;
     self.z += mz * speed * dt;
@@ -267,32 +221,30 @@ function updateSelf(dt) {
     self.x = Math.max(-lim, Math.min(lim, self.x));
     self.z = Math.max(-lim, Math.min(lim, self.z));
 
-    // Jump (cosmetic hop on flat ground).
     if (input.consumeJump() && self.y <= 0.001) self.vy = 7.5;
 
-    // Firing.
-    if (input.firing && performance.now() / 1000 - lastFire >= cfg.SHOOT_COOLDOWN) {
+    // Firing (disabled in squid form).
+    if (!self.squid && input.firing && performance.now() / 1000 - lastFire >= SHOOT_COOLDOWN) {
       lastFire = performance.now() / 1000;
       net.sendShoot(fwd.x, fwd.y);
-      const ex = self.x + fwd.x * cfg.SHOOT_RANGE;
-      const ez = self.z + fwd.y * cfg.SHOOT_RANGE;
-      projectiles.spawn(self.x, self.z, ex, ez, TEAM_COLORS[self.team]);
+      const ex = self.x + fwd.x * SHOOT_RANGE;
+      const ez = self.z + fwd.y * SHOOT_RANGE;
+      projectiles.spawn(self.x, self.z, ex, ez, slotColorHex(self.slot));
     }
   }
 
-  // Gravity for the hop.
   self.vy -= 22 * dt;
   self.y += self.vy * dt;
   if (self.y < 0) { self.y = 0; self.vy = 0; }
 
-  players.setSelfTransform(selfId, self.x, self.z, self.yaw, self.y);
+  players.setSelfTransform(selfId, self.x, self.z, self.yaw, self.y, self.squid);
 }
 
 function sendInput(dt) {
   inputAccum += dt;
-  if (inputAccum >= 1 / 20) { // ~20 Hz
+  if (inputAccum >= 1 / 20) {
     inputAccum = 0;
-    net.sendInput(self.x, self.z, self.yaw);
+    net.sendInput(self.x, self.z, self.yaw, self.squid);
   }
 }
 
@@ -316,12 +268,13 @@ class Projectiles {
   constructor(scene) {
     this.scene = scene;
     this.list = [];
-    this.geo = new THREE.SphereGeometry(0.45, 10, 10);
+    this.splashes = [];
+    this.geo = new THREE.SphereGeometry(0.4, 10, 10);
   }
   spawn(fromX, fromZ, toX, toZ, color) {
     const mat = new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.5 });
     const mesh = new THREE.Mesh(this.geo, mat);
-    mesh.position.set(fromX, 1.4, fromZ);
+    mesh.position.set(fromX, 1.1, fromZ);
     this.scene.add(mesh);
     this.list.push({ mesh, fromX, fromZ, toX, toZ, t: 0, dur: 0.18, color });
   }
@@ -338,22 +291,18 @@ class Projectiles {
       }
       p.mesh.position.x = p.fromX + (p.toX - p.fromX) * u;
       p.mesh.position.z = p.fromZ + (p.toZ - p.fromZ) * u;
-      p.mesh.position.y = 1.4 + Math.sin(u * Math.PI) * 1.6; // little arc
+      p.mesh.position.y = 1.1 + Math.sin(u * Math.PI) * 1.6;
     }
-    // animate splashes
-    if (this.splashes) {
-      for (let i = this.splashes.length - 1; i >= 0; i--) {
-        const s = this.splashes[i];
-        s.t += dt;
-        const u = s.t / 0.3;
-        s.mesh.scale.setScalar(1 + u * 3);
-        s.mesh.material.opacity = 0.6 * (1 - u);
-        if (u >= 1) { this.scene.remove(s.mesh); this.splashes.splice(i, 1); }
-      }
+    for (let i = this.splashes.length - 1; i >= 0; i--) {
+      const s = this.splashes[i];
+      s.t += dt;
+      const u = s.t / 0.3;
+      s.mesh.scale.setScalar(1 + u * 3);
+      s.mesh.material.opacity = 0.6 * (1 - u);
+      if (u >= 1) { this.scene.remove(s.mesh); this.splashes.splice(i, 1); }
     }
   }
   splash(x, z, color) {
-    if (!this.splashes) this.splashes = [];
     const mesh = new THREE.Mesh(
       new THREE.RingGeometry(0.3, 0.6, 16),
       new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.6, side: THREE.DoubleSide })
@@ -363,4 +312,30 @@ class Projectiles {
     this.scene.add(mesh);
     this.splashes.push({ mesh, t: 0 });
   }
+}
+
+// Dev-only hook for headless verification (stripped from production builds).
+if (import.meta.env.DEV) {
+  window.__ink = {
+    get self() { return self; },
+    get joined() { return joined; },
+    fire() { net.sendShoot(Math.sin(self.yaw), Math.cos(self.yaw)); },
+    cellCounts() {
+      if (!floor) return null;
+      const c = {};
+      for (const v of floor.cells) c[v] = (c[v] || 0) + 1;
+      return c;
+    },
+    info() {
+      return {
+        cam: camera && camera.position.toArray().map((n) => +n.toFixed(1)),
+        tris: renderer && renderer.info.render.triangles,
+        slot: self.slot, hp: self.hp, squid: self.squid,
+      };
+    },
+    look(yaw) { input.yaw = yaw; return yaw; },
+    setSquid(v) { input.squid = !!v; return input.squid; },
+    topDown() { debugCam = true; camera.position.set(0, 70, 0.01); camera.lookAt(0, 0, 0); return 'topdown'; },
+    resumeCam() { debugCam = false; return 'resumed'; },
+  };
 }

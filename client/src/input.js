@@ -7,14 +7,19 @@ export class Input {
     this.yaw = 0;
     this.firing = false;
     this.jumpQueued = false;
+    this.squid = false; // held while Shift is down
     this.sensitivity = 0.0024;
     this.locked = false;
 
     addEventListener('keydown', (e) => {
       this.keys[e.code] = true;
       if (e.code === 'Space') { this.jumpQueued = true; e.preventDefault(); }
+      if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') this.squid = true;
     });
-    addEventListener('keyup', (e) => { this.keys[e.code] = false; });
+    addEventListener('keyup', (e) => {
+      this.keys[e.code] = false;
+      if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') this.squid = false;
+    });
 
     domElement.addEventListener('mousedown', (e) => {
       if (e.button === 0) {
@@ -35,7 +40,7 @@ export class Input {
     });
 
     // Blur safety: clear movement if focus is lost.
-    addEventListener('blur', () => { this.keys = {}; this.firing = false; });
+    addEventListener('blur', () => { this.keys = {}; this.firing = false; this.squid = false; });
   }
 
   // Movement axes relative to facing. Returns {fwd, strafe} in -1..1.

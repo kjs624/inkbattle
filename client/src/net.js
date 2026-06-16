@@ -87,7 +87,7 @@ export class Net {
       if (Date.now() / 1000 - p.lastShot < SHOOT_COOLDOWN) return;
       const fx = this.game.shoot(payload.id, payload.dx, payload.dz);
       if (fx) {
-        const m = { id: payload.id, team: p.team, x: +p.x.toFixed(2), z: +p.z.toFixed(2), ex: +fx.endX.toFixed(2), ez: +fx.endZ.toFixed(2) };
+        const m = { id: payload.id, slot: p.slot, x: +p.x.toFixed(2), z: +p.z.toFixed(2), ex: +fx.endX.toFixed(2), ez: +fx.endZ.toFixed(2) };
         this.send('shotfx', m);
         this.emitLocal('shotFx', m); // host renders other players' shots too
       }
@@ -109,8 +109,8 @@ export class Net {
     ch.on('broadcast', { event: 'init' }, ({ payload }) => {
       if (payload.target !== this.clientId) return;
       if (payload.grid) this.shadowGrid = Uint8Array.from(payload.grid);
-      this.myTeam = payload.you.team;
-      this.updatePresenceTeam(payload.you.team);
+      this.myTeam = payload.you.slot;
+      this.updatePresenceTeam(payload.you.slot);
       this.emitLocal('init', payload);
     });
     ch.on('broadcast', { event: 'shotfx' }, ({ payload }) => this.emitLocal('shotFx', payload));
@@ -125,10 +125,10 @@ export class Net {
     this.trackPresence();
   }
 
-  sendInput(x, z, a) {
-    this.myInput = { x, z, a };
-    if (this.isHost && this.game) this.game.applyInput(this.clientId, x, z, a);
-    else this.send('input', { id: this.clientId, x, z, a });
+  sendInput(x, z, a, squid) {
+    this.myInput = { x, z, a, sq: squid };
+    if (this.isHost && this.game) this.game.applyInput(this.clientId, x, z, a, squid);
+    else this.send('input', { id: this.clientId, x, z, a, sq: squid });
   }
 
   sendShoot(dx, dz) {
@@ -136,7 +136,7 @@ export class Net {
       const p = this.game.players.get(this.clientId);
       if (!p || p.dead) return;
       const fx = this.game.shoot(this.clientId, dx, dz);
-      if (fx) this.send('shotfx', { id: this.clientId, team: p.team, x: +p.x.toFixed(2), z: +p.z.toFixed(2), ex: +fx.endX.toFixed(2), ez: +fx.endZ.toFixed(2) });
+      if (fx) this.send('shotfx', { id: this.clientId, slot: p.slot, x: +p.x.toFixed(2), z: +p.z.toFixed(2), ex: +fx.endX.toFixed(2), ez: +fx.endZ.toFixed(2) });
     } else {
       this.send('shoot', { id: this.clientId, dx, dz });
     }
@@ -200,7 +200,7 @@ export class Net {
       grid: this.game.gridSnapshot(),
       match: this.game.matchSnapshot(),
       players: this.game.playerStates(),
-      you: { team: p.team, x: p.x, z: p.z },
+      you: { slot: p.slot, hp: p.hp, x: p.x, z: p.z },
     };
   }
 
@@ -229,8 +229,8 @@ export class Net {
 
   // ---- host loops ----------------------------------------------------------
   hostTick() {
-    if (this.myInput) this.game.applyInput(this.clientId, this.myInput.x, this.myInput.z, this.myInput.a);
-    for (const [id, inp] of this.remoteInputs) this.game.applyInput(id, inp.x, inp.z, inp.a);
+    if (this.myInput) this.game.applyInput(this.clientId, this.myInput.x, this.myInput.z, this.myInput.a, this.myInput.sq);
+    for (const [id, inp] of this.remoteInputs) this.game.applyInput(id, inp.x, inp.z, inp.a, inp.sq);
     this.game.update();
   }
 

@@ -1,11 +1,10 @@
 // Authoritative game world — runs inside whichever client is the current host.
-// Ported from server/game.js (the original Node authoritative server) so the
-// exact same rules drive the serverless, Supabase-Realtime version.
+// v2: free-for-all. Every player owns a unique grid "slot" (their ink color).
+// Infinite match, HP with regen on own ink, and death wipes that player's ink.
 
 import {
-  MAP_SIZE, GRID, CELL, MATCH_DURATION, RESULT_DURATION,
-  BASE_SPEED, SHOOT_RANGE, BRUSH_RADIUS, STREAK_BLOBS, HIT_RADIUS,
-  RESPAWN_DELAY, EMPTY, PURPLE, ORANGE,
+  MAP_SIZE, GRID, CELL, BASE_SPEED, SHOOT_RANGE, BRUSH_RADIUS, STREAK_BLOBS,
+  HIT_RADIUS, RESPAWN_DELAY, EMPTY, MAX_HP, HIT_DAMAGE, HEAL_RATE, REGEN_DELAY,
   SCORE_PER_CELL, SCORE_PER_KILL, SCORE_PER_DEATH,
 } from './gameconst.js';
 
@@ -22,71 +21,68 @@ function worldToCell(x, z) {
 
 export class Game {
   constructor() {
-    this.grid = new Uint8Array(GRID * GRID);
+    this.grid = new Uint8Array(GRID * GRID); // 0 = empty, else owner slot
     this.players = new Map();
-    this.counts = { [PURPLE]: 0, [ORANGE]: 0 };
-    this.dirtyCells = new Map();
-    this.phase = 'playing';
-    this.phaseEndsAt = now() + MATCH_DURATION;
-    this.matchId = 1;
+    this.counts = new Map();        // slot -> painted cell count
+    this.usedSlots = new Set();
+    this.dirtyCells = new Map();    // idx -> slot
+    this.phase = 'playing';         // always 'playing' (infinite)
+    this.lastUpdate = now();
   }
 
-  get timeLeft() {
-    return Math.max(0, this.phaseEndsAt - now());
-  }
+  get timeLeft() { return 0; } // infinite
 
-  // Seed the grid from a snapshot (used on host migration so ink persists).
   importGrid(arr) {
     if (!arr || arr.length !== this.grid.length) return;
-    this.counts = { [PURPLE]: 0, [ORANGE]: 0 };
+    this.counts = new Map();
     for (let i = 0; i < arr.length; i++) {
       const v = arr[i];
       this.grid[i] = v;
-      if (v === PURPLE || v === ORANGE) this.counts[v]++;
+      if (v !== EMPTY) this.counts.set(v, (this.counts.get(v) || 0) + 1);
     }
   }
 
-  setPhase(phase, timeLeft) {
-    this.phase = phase === 'result' ? 'result' : 'playing';
-    this.phaseEndsAt = now() + Math.max(0, timeLeft || 0);
-  }
+  setPhase() { this.phase = 'playing'; }
 
   // ---- players -------------------------------------------------------------
 
-  addPlayer(id, name, team = null) {
-    if (team !== PURPLE && team !== ORANGE) {
-      let purple = 0, orange = 0;
-      for (const p of this.players.values()) {
-        if (p.team === PURPLE) purple++; else orange++;
-      }
-      team = purple <= orange ? PURPLE : ORANGE;
-    }
-    const spawn = this.spawnPoint(team);
+  nextSlot() {
+    for (let s = 1; s <= 255; s++) if (!this.usedSlots.has(s)) return s;
+    return 1; // overflow fallback
+  }
+
+  addPlayer(id, name) {
+    const slot = this.nextSlot();
+    this.usedSlots.add(slot);
+    const spawn = this.spawnPoint();
     const player = {
       id,
       name: (name || 'Player').slice(0, 14),
-      team,
-      x: spawn.x, z: spawn.z,
-      angle: team === PURPLE ? 0 : Math.PI,
+      slot,
+      x: spawn.x, z: spawn.z, angle: 0,
+      hp: MAX_HP, lastHit: 0,
       kills: 0, deaths: 0, cells: 0,
-      dead: false, respawnAt: 0,
-      lastShot: 0,
+      dead: false, respawnAt: 0, lastShot: 0, squid: false,
     };
     this.players.set(id, player);
     return player;
   }
 
   removePlayer(id) {
+    const p = this.players.get(id);
+    if (!p) return;
+    this.clearInk(p.slot);       // free their territory
+    this.usedSlots.delete(p.slot);
     this.players.delete(id);
   }
 
-  spawnPoint(team) {
-    const z = team === PURPLE ? -HALF + 6 : HALF - 6;
-    const x = (Math.random() - 0.5) * (MAP_SIZE - 12);
-    return { x, z };
+  spawnPoint() {
+    // FFA: spawn anywhere with a little margin from the walls.
+    const m = MAP_SIZE / 2 - 5;
+    return { x: (Math.random() * 2 - 1) * m, z: (Math.random() * 2 - 1) * m };
   }
 
-  applyInput(id, x, z, angle) {
+  applyInput(id, x, z, angle, squid) {
     const p = this.players.get(id);
     if (!p || p.dead) return;
     if (!Number.isFinite(x) || !Number.isFinite(z) || !Number.isFinite(angle)) return;
@@ -94,15 +90,15 @@ export class Game {
     p.x = clamp(x, -lim, lim);
     p.z = clamp(z, -lim, lim);
     p.angle = angle;
+    p.squid = !!squid;
   }
 
   // ---- shooting & painting -------------------------------------------------
 
   shoot(id, dirX, dirZ) {
     const p = this.players.get(id);
-    if (!p || p.dead) return;
-    const t = now();
-    p.lastShot = t;
+    if (!p || p.dead || p.squid) return; // no shooting in squid form
+    p.lastShot = now();
 
     const len = Math.hypot(dirX, dirZ) || 1;
     dirX /= len; dirZ /= len;
@@ -112,19 +108,19 @@ export class Game {
       const px = p.x + dirX * dist;
       const pz = p.z + dirZ * dist;
       const radius = BRUSH_RADIUS * (0.6 + 0.4 * (i / STREAK_BLOBS));
-      this.paintBlob(px, pz, radius, p.team, p);
+      this.paintBlob(px, pz, radius, p.slot, p);
     }
 
     const endX = p.x + dirX * SHOOT_RANGE;
     const endZ = p.z + dirZ * SHOOT_RANGE;
     for (const other of this.players.values()) {
-      if (other.id === id || other.team === p.team || other.dead) continue;
+      if (other.id === id || other.dead) continue;
       for (let i = 1; i <= STREAK_BLOBS; i++) {
         const dist = (SHOOT_RANGE * i) / STREAK_BLOBS;
         const sx = p.x + dirX * dist;
         const sz = p.z + dirZ * dist;
         if (Math.hypot(other.x - sx, other.z - sz) < HIT_RADIUS) {
-          this.splat(other, p);
+          this.damage(other, p);
           break;
         }
       }
@@ -132,7 +128,7 @@ export class Game {
     return { endX, endZ };
   }
 
-  paintBlob(wx, wz, radiusCells, team, owner) {
+  paintBlob(wx, wz, radiusCells, slot, owner) {
     const { cx, cz } = worldToCell(wx, wz);
     const r = Math.ceil(radiusCells);
     const r2 = radiusCells * radiusCells;
@@ -143,53 +139,76 @@ export class Game {
         if (gx < 0 || gx >= GRID || gz < 0 || gz >= GRID) continue;
         const idx = gz * GRID + gx;
         const prev = this.grid[idx];
-        if (prev === team) continue;
-        if (prev !== EMPTY) this.counts[prev]--;
-        this.counts[team]++;
-        this.grid[idx] = team;
-        this.dirtyCells.set(idx, team);
+        if (prev === slot) continue;
+        if (prev !== EMPTY) this.dec(prev);
+        this.inc(slot);
+        this.grid[idx] = slot;
+        this.dirtyCells.set(idx, slot);
         if (owner) owner.cells++;
       }
     }
   }
 
-  splat(victim, killer) {
+  inc(slot) { this.counts.set(slot, (this.counts.get(slot) || 0) + 1); }
+  dec(slot) {
+    const c = (this.counts.get(slot) || 0) - 1;
+    if (c <= 0) this.counts.delete(slot); else this.counts.set(slot, c);
+  }
+
+  // Wipe every cell owned by a slot (on death / leave).
+  clearInk(slot) {
+    if (!this.counts.get(slot)) return;
+    for (let i = 0; i < this.grid.length; i++) {
+      if (this.grid[i] === slot) {
+        this.grid[i] = EMPTY;
+        this.dirtyCells.set(i, EMPTY);
+      }
+    }
+    this.counts.delete(slot);
+    const p = [...this.players.values()].find((pl) => pl.slot === slot);
+    if (p) p.cells = 0;
+  }
+
+  damage(victim, attacker) {
+    victim.hp -= HIT_DAMAGE;
+    victim.lastHit = now();
+    if (victim.hp <= 0) this.die(victim, attacker);
+  }
+
+  die(victim, killer) {
     victim.dead = true;
+    victim.hp = 0;
     victim.respawnAt = now() + RESPAWN_DELAY;
     victim.deaths++;
-    if (killer) killer.kills++;
+    if (killer && killer !== victim) killer.kills++;
+    this.clearInk(victim.slot); // death deletes your territory
   }
 
   // ---- match loop ----------------------------------------------------------
 
   update() {
     const t = now();
+    const dt = Math.min(0.25, t - this.lastUpdate);
+    this.lastUpdate = t;
+
     for (const p of this.players.values()) {
-      if (p.dead && t >= p.respawnAt) {
-        const s = this.spawnPoint(p.team);
-        p.x = s.x; p.z = s.z; p.dead = false;
+      if (p.dead) {
+        if (t >= p.respawnAt) {
+          const s = this.spawnPoint();
+          p.x = s.x; p.z = s.z; p.dead = false; p.hp = MAX_HP;
+        }
+        continue;
       }
-    }
-    if (this.phase === 'playing' && this.timeLeft <= 0) {
-      this.phase = 'result';
-      this.phaseEndsAt = t + RESULT_DURATION;
-    } else if (this.phase === 'result' && this.timeLeft <= 0) {
-      this.resetMatch();
+      // Heal when standing on your own ink (after a short delay since last hit).
+      if (p.hp < MAX_HP && t - p.lastHit >= REGEN_DELAY && this.slotAt(p.x, p.z) === p.slot) {
+        p.hp = Math.min(MAX_HP, p.hp + HEAL_RATE * dt);
+      }
     }
   }
 
-  resetMatch() {
-    this.grid.fill(EMPTY);
-    this.counts = { [PURPLE]: 0, [ORANGE]: 0 };
-    this.dirtyCells.clear();
-    this.phase = 'playing';
-    this.phaseEndsAt = now() + MATCH_DURATION;
-    this.matchId++;
-    for (const p of this.players.values()) {
-      p.kills = 0; p.deaths = 0; p.cells = 0; p.dead = false;
-      const s = this.spawnPoint(p.team);
-      p.x = s.x; p.z = s.z;
-    }
+  slotAt(x, z) {
+    const { cx, cz } = worldToCell(x, z);
+    return this.grid[cz * GRID + cx];
   }
 
   // ---- serialization -------------------------------------------------------
@@ -199,56 +218,48 @@ export class Game {
   }
 
   territory() {
-    const total = GRID * GRID;
-    return {
-      purple: this.counts[PURPLE],
-      orange: this.counts[ORANGE],
-      total,
-      purplePct: (this.counts[PURPLE] / total) * 100,
-      orangePct: (this.counts[ORANGE] / total) * 100,
-    };
+    return { total: GRID * GRID };
   }
 
   leaderboard() {
     return [...this.players.values()]
       .map((p) => ({
-        id: p.id, name: p.name, team: p.team,
+        id: p.id, name: p.name, slot: p.slot,
         cells: p.cells, kills: p.kills, deaths: p.deaths,
         score: this.scoreOf(p),
       }))
-      .sort((a, b) => b.score - a.score);
+      .sort((a, b) => b.cells - a.cells || b.score - a.score);
   }
 
   playerStates() {
     const arr = [];
     for (const p of this.players.values()) {
       arr.push({
-        id: p.id, n: p.name, t: p.team,
+        id: p.id, n: p.name, sl: p.slot,
         x: +p.x.toFixed(2), z: +p.z.toFixed(2), a: +p.angle.toFixed(3),
-        d: p.dead ? 1 : 0, k: p.kills, de: p.deaths, c: p.cells,
+        d: p.dead ? 1 : 0, h: Math.round(p.hp), sq: p.squid ? 1 : 0,
+        k: p.kills, de: p.deaths, c: p.cells,
       });
     }
     return arr;
   }
 
-  gridSnapshot() {
-    return Array.from(this.grid);
-  }
+  gridSnapshot() { return Array.from(this.grid); }
 
   flushDirty() {
     if (this.dirtyCells.size === 0) return null;
     const cells = [];
-    for (const [idx, team] of this.dirtyCells) cells.push(idx, team);
+    for (const [idx, slot] of this.dirtyCells) cells.push(idx, slot);
     this.dirtyCells.clear();
     return cells;
   }
 
   matchSnapshot() {
     return {
-      matchId: this.matchId,
-      phase: this.phase,
-      timeLeft: Math.ceil(this.timeLeft),
-      territory: this.territory(),
+      phase: 'playing',
+      timeLeft: 0,
+      total: GRID * GRID,
+      playerCount: this.players.size,
       leaderboard: this.leaderboard(),
     };
   }

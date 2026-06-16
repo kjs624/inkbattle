@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { EMPTY, TEAM_INK } from './constants.js';
+import { EMPTY, slotColorRGB } from './constants.js';
 
 // The painted floor. The grid state (one byte per cell) is rendered into a
 // DataTexture that's mapped onto a flat plane. Updating ink = writing pixels.
@@ -54,22 +54,22 @@ export class InkFloor {
     }
   }
 
-  // Write one cell index (gz*GRID+gx) with a team color. Note the vertical flip
-  // (GRID-1-cz) so texture rows line up with world Z.
-  setCell(idx, team) {
+  // Write one cell index (gz*GRID+gx) with an owner slot's color. Note the
+  // vertical flip (GRID-1-cz) so texture rows line up with world Z.
+  setCell(idx, slot) {
     const g = this.grid;
     const cx = idx % g;
     const cz = (idx - cx) / g;
-    this.cells[idx] = team;
+    this.cells[idx] = slot;
     const py = g - 1 - cz;
     const i = (py * g + cx) * 4;
-    if (team === EMPTY) {
+    if (slot === EMPTY) {
       const shade = (cx + cz) % 2 === 0 ? 60 : 52;
       this.data[i] = shade;
       this.data[i + 1] = shade + 6;
       this.data[i + 2] = shade + 16;
     } else {
-      const [r, gg, b] = TEAM_INK[team];
+      const [r, gg, b] = slotColorRGB(slot);
       this.data[i] = r;
       this.data[i + 1] = gg;
       this.data[i + 2] = b;
@@ -93,8 +93,8 @@ export class InkFloor {
     this.texture.needsUpdate = true;
   }
 
-  // Which team's ink (if any) covers a given world position.
-  teamAtWorld(x, z) {
+  // Which player slot's ink (if any) covers a given world position.
+  slotAtWorld(x, z) {
     const g = this.grid;
     let cx = Math.floor((x + this.half) / this.cell);
     let cz = Math.floor((z + this.half) / this.cell);
