@@ -35,9 +35,13 @@ export const REGEN_DELAY = 1.2;    // seconds after taking damage before regen
 // Squid form (hold Shift): faster, smaller, can't shoot.
 export const SQUID_SPEED_MULT = 1.5;
 
-// Terrain: max slope you can walk up. Steeper than this is a "wall" you can
-// only climb as a squid standing on your own ink.
-export const MAX_WALK_SLOPE = 1.1;
+// Terrain: how high a step you can walk up. Taller than this is a "wall" you
+// can only climb as a squid standing on your own ink.
+export const STEP_UP = 1.6;
+export const MAX_WALK_SLOPE = 1.1; // (kept; unused with box terrain)
+
+// First-person eye height above the ground.
+export const EYE_HEIGHT = 1.7;
 
 export const EMPTY = 0;
 // Grid cells now store a per-player "slot" (1..255); 0 = empty.

@@ -45,6 +45,12 @@ export class UI {
           <div class="stat"><b id="sDeaths">0</b><span>사망</span></div>
         </div>
         <div class="center-banner hidden" id="banner"></div>
+        <div class="weapon-hud" id="weaponHud">
+          <div class="w-slot" data-w="rifle"><span class="w-key">1</span><span class="w-name">소총</span><span class="w-sub">범용</span></div>
+          <div class="w-slot" data-w="smg"><span class="w-key">2</span><span class="w-name">기관단총</span><span class="w-sub">연사</span></div>
+          <div class="w-slot" data-w="sniper"><span class="w-key">3</span><span class="w-name">스나이퍼</span><span class="w-sub">장거리</span></div>
+          <div class="w-slot" data-w="shotgun"><span class="w-key">4</span><span class="w-name">샷건</span><span class="w-sub">근거리</span></div>
+        </div>
         <div class="conn"><span class="led" id="led"></span><span id="connText">연결 중</span></div>
       </div>
 
@@ -149,6 +155,12 @@ export class UI {
     b.classList.remove('hidden');
   }
   hideBanner() { this.root.querySelector('#banner').classList.add('hidden'); }
+
+  setWeapon(weaponKey) {
+    this.root.querySelectorAll('.w-slot').forEach((el) => {
+      el.classList.toggle('active', el.dataset.w === weaponKey);
+    });
+  }
 }
 
 function escapeHtml(s) {

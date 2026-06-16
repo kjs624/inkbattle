@@ -3,10 +3,11 @@
 // Infinite match, HP with regen on own ink, and death wipes that player's ink.
 
 import {
-  MAP_SIZE, GRID, CELL, BASE_SPEED, SHOOT_RANGE, BRUSH_RADIUS, STREAK_BLOBS,
-  HIT_RADIUS, RESPAWN_DELAY, EMPTY, MAX_HP, HIT_DAMAGE, HEAL_RATE, REGEN_DELAY,
-  SCORE_PER_CELL, SCORE_PER_KILL, SCORE_PER_DEATH,
+  MAP_SIZE, GRID, CELL, HIT_RADIUS, RESPAWN_DELAY, EMPTY, MAX_HP,
+  HEAL_RATE, REGEN_DELAY, SCORE_PER_CELL, SCORE_PER_KILL, SCORE_PER_DEATH,
 } from './gameconst.js';
+import { getWeapon } from './weapons.js';
+import { terrainHeight } from './terrain.js';
 
 const HALF = MAP_SIZE / 2;
 
@@ -62,7 +63,7 @@ export class Game {
       x: spawn.x, z: spawn.z, angle: 0,
       hp: MAX_HP, lastHit: 0,
       kills: 0, deaths: 0, cells: 0,
-      dead: false, respawnAt: 0, lastShot: 0, squid: false,
+      dead: false, respawnAt: 0, lastShot: 0, squid: false, weapon: 'rifle',
     };
     this.players.set(id, player);
     return player;
@@ -82,7 +83,7 @@ export class Game {
     return { x: (Math.random() * 2 - 1) * m, z: (Math.random() * 2 - 1) * m };
   }
 
-  applyInput(id, x, z, angle, squid) {
+  applyInput(id, x, z, angle, squid, weapon) {
     const p = this.players.get(id);
     if (!p || p.dead) return;
     if (!Number.isFinite(x) || !Number.isFinite(z) || !Number.isFinite(angle)) return;
@@ -91,45 +92,60 @@ export class Game {
     p.z = clamp(z, -lim, lim);
     p.angle = angle;
     p.squid = !!squid;
+    if (weapon) p.weapon = weapon;
   }
 
   // ---- shooting & painting -------------------------------------------------
 
-  shoot(id, dirX, dirZ) {
+  // ray = { w, ox, oy, oz, dx, dy, dz }  (muzzle origin + 3D aim direction)
+  shoot(id, ray) {
     const p = this.players.get(id);
-    if (!p || p.dead || p.squid) return; // no shooting in squid form
-    p.lastShot = now();
+    if (!p || p.dead || p.squid || !ray) return;
+    const w = getWeapon(ray.w);
+    const t0 = now();
+    if (t0 - p.lastShot < w.cooldown) return;
+    p.lastShot = t0;
+    p.weapon = w.key;
 
-    const len = Math.hypot(dirX, dirZ) || 1;
-    dirX /= len; dirZ /= len;
+    const len = Math.hypot(ray.dx, ray.dy, ray.dz) || 1;
+    const ax = ray.dx / len, ay = ray.dy / len, az = ray.dz / len;
+    const impacts = [];
 
-    // Ink right in front of the shooter too, so wall faces (not just the top)
-    // get covered — needed for squid wall-climbing.
-    this.paintBlob(p.x + dirX * 1.5, p.z + dirZ * 1.5, BRUSH_RADIUS, p.slot, p);
-
-    for (let i = 1; i <= STREAK_BLOBS; i++) {
-      const dist = (SHOOT_RANGE * i) / STREAK_BLOBS;
-      const px = p.x + dirX * dist;
-      const pz = p.z + dirZ * dist;
-      const radius = BRUSH_RADIUS * (0.6 + 0.4 * (i / STREAK_BLOBS));
-      this.paintBlob(px, pz, radius, p.slot, p);
-    }
-
-    const endX = p.x + dirX * SHOOT_RANGE;
-    const endZ = p.z + dirZ * SHOOT_RANGE;
-    for (const other of this.players.values()) {
-      if (other.id === id || other.dead) continue;
-      for (let i = 1; i <= STREAK_BLOBS; i++) {
-        const dist = (SHOOT_RANGE * i) / STREAK_BLOBS;
-        const sx = p.x + dirX * dist;
-        const sz = p.z + dirZ * dist;
-        if (Math.hypot(other.x - sx, other.z - sz) < HIT_RADIUS) {
-          this.damage(other, p);
-          break;
-        }
+    for (let pellet = 0; pellet < w.pellets; pellet++) {
+      let dx = ax, dy = ay, dz = az;
+      if (w.spread > 0) {
+        dx += (Math.random() - 0.5) * w.spread * 2;
+        dy += (Math.random() - 0.5) * w.spread * 2;
+        dz += (Math.random() - 0.5) * w.spread * 2;
+        const l = Math.hypot(dx, dy, dz) || 1; dx /= l; dy /= l; dz /= l;
       }
+      const hit = this.raymarch(ray.ox, ray.oy, ray.oz, dx, dy, dz, w.range);
+      this.paintBlob(hit.x, hit.z, w.brush, p.slot, p);
+      impacts.push({ x: +hit.x.toFixed(2), z: +hit.z.toFixed(2) });
+      this.hitscan(id, p, ray.ox, ray.oy, ray.oz, dx, dy, dz, hit.t, w.dmg);
     }
-    return { endX, endZ };
+    return { impacts, w: w.key, ox: ray.ox, oy: ray.oy, oz: ray.oz, dx: ax, dy: ay, dz: az };
+  }
+
+  // March along a ray until it goes under the terrain; returns ground impact.
+  raymarch(ox, oy, oz, dx, dy, dz, range) {
+    const step = 0.5;
+    for (let t = step; t <= range; t += step) {
+      const x = ox + dx * t, y = oy + dy * t, z = oz + dz * t;
+      if (y <= terrainHeight(x, z)) return { x, z, t };
+    }
+    return { x: ox + dx * range, z: oz + dz * range, t: range };
+  }
+
+  hitscan(id, shooter, ox, oy, oz, dx, dy, dz, maxT, dmg) {
+    for (const e of this.players.values()) {
+      if (e.id === id || e.dead) continue;
+      const ex = e.x, ez = e.z, ey = terrainHeight(ex, ez) + 1.0;
+      let t = (ex - ox) * dx + (ey - oy) * dy + (ez - oz) * dz;
+      if (t < 0) t = 0; else if (t > maxT) t = maxT;
+      const cx = ox + dx * t, cy = oy + dy * t, cz = oz + dz * t;
+      if (Math.hypot(ex - cx, ey - cy, ez - cz) < HIT_RADIUS) this.damage(e, shooter, dmg);
+    }
   }
 
   paintBlob(wx, wz, radiusCells, slot, owner) {
@@ -173,8 +189,8 @@ export class Game {
     if (p) p.cells = 0;
   }
 
-  damage(victim, attacker) {
-    victim.hp -= HIT_DAMAGE;
+  damage(victim, attacker, dmg) {
+    victim.hp -= dmg;
     victim.lastHit = now();
     if (victim.hp <= 0) this.die(victim, attacker);
   }
@@ -241,7 +257,7 @@ export class Game {
       arr.push({
         id: p.id, n: p.name, sl: p.slot,
         x: +p.x.toFixed(2), z: +p.z.toFixed(2), a: +p.angle.toFixed(3),
-        d: p.dead ? 1 : 0, h: Math.round(p.hp), sq: p.squid ? 1 : 0,
+        d: p.dead ? 1 : 0, h: Math.round(p.hp), sq: p.squid ? 1 : 0, w: p.weapon,
         k: p.kills, de: p.deaths, c: p.cells,
       });
     }

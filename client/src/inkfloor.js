@@ -22,8 +22,10 @@ export class InkFloor {
     this.texture.minFilter = THREE.LinearFilter;
     this.texture.needsUpdate = true;
 
-    // Subdivided plane displaced by the heightfield so ink wraps over hills.
-    const geo = new THREE.PlaneGeometry(mapSize, mapSize, grid, grid);
+    // Subdivided plane displaced by the heightfield so ink wraps over the boxes.
+    // Higher segment count than the ink grid gives crisper box edges.
+    const seg = grid * 2;
+    const geo = new THREE.PlaneGeometry(mapSize, mapSize, seg, seg);
     geo.rotateX(-Math.PI / 2);
     const pos = geo.attributes.position;
     for (let i = 0; i < pos.count; i++) {

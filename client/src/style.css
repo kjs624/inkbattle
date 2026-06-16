@@ -277,7 +277,56 @@ button.primary:disabled { filter: grayscale(0.6) brightness(0.7); cursor: defaul
 .result-table .dot { width: 9px; height: 9px; border-radius: 50%; }
 .result-next { color: var(--muted); font-size: 13px; margin-top: 14px; }
 
+/* bottom center: weapon selector HUD */
+.weapon-hud {
+  position: absolute;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 6px;
+  pointer-events: none;
+}
+.w-slot {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  background: var(--panel);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 10px;
+  padding: 7px 12px 5px;
+  min-width: 62px;
+  opacity: 0.45;
+  transition: opacity 0.12s, border-color 0.12s, background 0.12s;
+}
+.w-slot.active {
+  opacity: 1;
+  border-color: rgba(255,255,255,0.38);
+  background: rgba(255,255,255,0.1);
+  box-shadow: 0 0 12px rgba(167,139,250,0.25);
+}
+.w-key {
+  font-size: 10px;
+  color: var(--muted);
+  font-weight: 700;
+  letter-spacing: 0.5px;
+}
+.w-name {
+  font-size: 12px;
+  font-weight: 700;
+  margin-top: 2px;
+  white-space: nowrap;
+}
+.w-sub {
+  font-size: 10px;
+  color: var(--muted);
+  margin-top: 1px;
+}
+
 @media (max-width: 560px) {
   .leaderboard { width: 150px; font-size: 12px; }
   .timer { font-size: 28px; }
+  .weapon-hud { gap: 4px; }
+  .w-slot { min-width: 50px; padding: 6px 8px 4px; }
+  .w-name { font-size: 11px; }
 }

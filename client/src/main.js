@@ -7,10 +7,10 @@ import { InkFloor } from './inkfloor.js';
 import { Players } from './players.js';
 import { DEFAULT_CONFIG, EMPTY, slotColorHex } from './constants.js';
 import {
-  BASE_SPEED, SPEED_OWN_INK, SQUID_SPEED_MULT, MAX_HP, SHOOT_RANGE, SHOOT_COOLDOWN,
-  MAX_WALK_SLOPE,
+  BASE_SPEED, SPEED_OWN_INK, SQUID_SPEED_MULT, MAX_HP, STEP_UP, EYE_HEIGHT,
 } from './gameconst.js';
 import { terrainHeight } from './terrain.js';
+import { getWeapon, WEAPON_ORDER } from './weapons.js';
 
 const root = document.getElementById('app');
 const ui = new UI(root);
@@ -24,10 +24,11 @@ let gameOver = false;      // true once we die — freezes control, shows score
 
 // Local state for our own avatar (FFA: slot is our color/identity).
 const self = {
-  x: 0, z: 0, y: 0, vy: 0, yaw: 0, groundY: 0,
-  slot: 1, hp: MAX_HP, dead: false, squid: false,
+  x: 0, z: 0, y: 0, vy: 0, yaw: 0, pitch: 0, groundY: 0,
+  slot: 1, hp: MAX_HP, dead: false, squid: false, weapon: WEAPON_ORDER[0],
   cells: 0, kills: 0, deaths: 0, rank: 0, totalPlayers: 0,
 };
+let gun = null, gunFlash = null, gunBaseZ = -0.6, gunRecoil = 0, gunFlashTimer = 0;
 let serverSelfPos = { x: 0, z: 0 };
 let lastFire = 0;
 let inputAccum = 0;
@@ -71,7 +72,44 @@ function buildScene() {
   input = new Input(renderer.domElement);
   projectiles = new Projectiles(scene);
 
+  scene.add(camera);   // so the first-person gun (a child of camera) renders
+  setGun(self.weapon);
+
   addEventListener('resize', onResize);
+}
+
+// Build a simple first-person gun viewmodel and attach it to the camera.
+function setGun(weaponKey) {
+  if (gun) { camera.remove(gun); }
+  const w = getWeapon(weaponKey);
+  gun = new THREE.Group();
+  const mat = new THREE.MeshStandardMaterial({ color: 0x20242e, roughness: 0.6, metalness: 0.3 });
+  const accent = new THREE.MeshStandardMaterial({ color: w.gunColor, emissive: w.gunColor, emissiveIntensity: 0.35 });
+
+  const body = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.16, 0.34), mat);
+  gun.add(body);
+  const barrelLen = 0.3 + w.len * 0.34;
+  const barrel = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.07, barrelLen), mat);
+  barrel.position.set(0, 0.03, -0.17 - barrelLen / 2);
+  gun.add(barrel);
+  const sight = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.05, 0.12), accent);
+  sight.position.set(0, 0.12, -0.1);
+  gun.add(sight);
+  const grip = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.18, 0.1), mat);
+  grip.position.set(0, -0.15, 0.08);
+  gun.add(grip);
+
+  // muzzle flash (hidden until firing)
+  gunFlash = new THREE.Mesh(
+    new THREE.SphereGeometry(0.09, 8, 8),
+    new THREE.MeshBasicMaterial({ color: 0xfff2a0 })
+  );
+  gunFlash.position.set(0, 0.03, -0.17 - barrelLen);
+  gunFlash.visible = false;
+  gun.add(gunFlash);
+
+  gun.position.set(0.32, -0.26, gunBaseZ);
+  camera.add(gun);
 }
 
 function buildWalls() {
@@ -115,8 +153,9 @@ net.on('init', (data) => {
   self.slot = data.you.slot;
   self.hp = data.you.hp ?? MAX_HP;
   self.x = data.you.x; self.z = data.you.z; self.y = 0; self.vy = 0;
-  self.yaw = 0; input.yaw = 0;
+  self.yaw = 0; input.yaw = 0; self.pitch = 0; input.pitch = 0;
   self.dead = false; self.squid = false;
+  ui.setWeapon(input.weapon);
 
   floor.applySnapshot(data.grid);
   players.ensure(selfId, self.slot, '나', true);
@@ -157,8 +196,15 @@ net.on('matchStart', (data) => {
 });
 
 net.on('shotFx', (fx) => {
-  if (!projectiles || fx.id === selfId) return;
-  projectiles.spawn(fx.x, fx.z, fx.ex, fx.ez, slotColorHex(fx.slot));
+  if (!projectiles || fx.id === selfId || !fx.impacts) return;
+  const shooter = players.get(fx.id);
+  const color = slotColorHex(shooter ? shooter.slot : 1);
+  const origin = new THREE.Vector3(fx.ox, fx.oy, fx.oz);
+  const wpn = getWeapon(fx.w);
+  for (const im of fx.impacts) {
+    const to = new THREE.Vector3(im.x, terrainHeight(im.x, im.z) + 0.3, im.z);
+    projectiles.spawnTracer(origin, to, color, wpn.bulletSpeed);
+  }
 });
 
 net.on('left', (id) => { if (players) players.remove(id); });
@@ -202,13 +248,28 @@ function loop(now) {
   }
   players.interpolate(dt, selfId);
   projectiles.update(dt);
+  if (gun) {
+    gunRecoil = Math.max(0, gunRecoil - dt * 9);
+    gun.position.z = gunBaseZ + gunRecoil * 0.09;
+    gun.rotation.x = gunRecoil * 0.22;
+  }
+  if (gunFlash) {
+    gunFlashTimer = Math.max(0, gunFlashTimer - dt);
+    gunFlash.visible = gunFlashTimer > 0;
+  }
   updateCamera(dt);
   renderer.render(scene, camera);
 }
 
 function updateSelf(dt) {
   self.yaw = input.yaw;
+  self.pitch = input.pitch;
   self.squid = !!input.squid && !self.dead;
+  if (input.weapon !== self.weapon) {
+    self.weapon = input.weapon;
+    setGun(self.weapon);
+    ui.setWeapon(self.weapon);
+  }
   const fwd = new THREE.Vector2(Math.sin(self.yaw), Math.cos(self.yaw));
   const right = new THREE.Vector2(Math.cos(self.yaw), -Math.sin(self.yaw));
 
@@ -231,27 +292,21 @@ function updateSelf(dt) {
     nx = Math.max(-lim, Math.min(lim, nx));
     nz = Math.max(-lim, Math.min(lim, nz));
 
-    // Terrain: block ascending steep slopes ("walls") unless you're a squid
-    // standing on your own ink — then you climb.
-    const horiz = Math.hypot(nx - self.x, nz - self.z);
-    if (horiz > 1e-5) {
-      const slope = (terrainHeight(nx, nz) - terrainHeight(self.x, self.z)) / horiz;
-      const onOwnInkHere = floor.slotAtWorld(self.x, self.z) === self.slot;
-      const onOwnInkDest = floor.slotAtWorld(nx, nz) === self.slot;
-      const canClimb = self.squid && (onOwnInkHere || onOwnInkDest);
-      if (slope > MAX_WALK_SLOPE && !canClimb) { nx = self.x; nz = self.z; }
-    }
+    // Step/climb gate: a tall step is a "wall" — climbable only as a squid
+    // standing on your own ink. Small steps you just walk up.
+    const dH = terrainHeight(nx, nz) - terrainHeight(self.x, self.z);
+    const canClimb = self.squid &&
+      (floor.slotAtWorld(self.x, self.z) === self.slot || floor.slotAtWorld(nx, nz) === self.slot);
+    if (dH > STEP_UP && !canClimb) { nx = self.x; nz = self.z; }
     self.x = nx; self.z = nz;
 
     if (input.consumeJump() && self.y <= 0.001) self.vy = 7.5;
 
-    // Firing (disabled in squid form).
-    if (!self.squid && input.firing && performance.now() / 1000 - lastFire >= SHOOT_COOLDOWN) {
+    // Firing (disabled in squid form), per-weapon fire rate.
+    const w = getWeapon(self.weapon);
+    if (!self.squid && input.firing && performance.now() / 1000 - lastFire >= w.cooldown) {
       lastFire = performance.now() / 1000;
-      net.sendShoot(fwd.x, fwd.y);
-      const ex = self.x + fwd.x * SHOOT_RANGE;
-      const ez = self.z + fwd.y * SHOOT_RANGE;
-      projectiles.spawn(self.x, self.z, ex, ez, slotColorHex(self.slot));
+      fireWeapon(w);
     }
   }
 
@@ -263,43 +318,80 @@ function updateSelf(dt) {
   players.setSelfTransform(selfId, self.x, self.z, self.yaw, self.groundY + self.y, self.squid);
 }
 
+function aimVec() {
+  const cp = Math.cos(self.pitch), sp = Math.sin(self.pitch);
+  return new THREE.Vector3(Math.sin(self.yaw) * cp, sp, Math.cos(self.yaw) * cp);
+}
+function eyeVec() {
+  return new THREE.Vector3(self.x, self.groundY + EYE_HEIGHT + self.y, self.z);
+}
+function raymarchClient(o, d, range) {
+  const step = 0.5;
+  for (let t = step; t <= range; t += step) {
+    const x = o.x + d.x * t, y = o.y + d.y * t, z = o.z + d.z * t;
+    const th = terrainHeight(x, z);
+    if (y <= th) return new THREE.Vector3(x, th + 0.05, z);
+  }
+  return new THREE.Vector3(o.x + d.x * range, o.y + d.y * range, o.z + d.z * range);
+}
+function fireWeapon(w) {
+  const eye = eyeVec();
+  const aim = aimVec();
+  net.sendShoot({
+    w: w.key,
+    ox: +eye.x.toFixed(2), oy: +eye.y.toFixed(2), oz: +eye.z.toFixed(2),
+    dx: +aim.x.toFixed(3), dy: +aim.y.toFixed(3), dz: +aim.z.toFixed(3),
+  });
+  const muzzle = eye.clone().add(aim.clone().multiplyScalar(0.8));
+  const color = slotColorHex(self.slot);
+  for (let i = 0; i < w.pellets; i++) {
+    const d = aim.clone();
+    if (w.spread > 0) {
+      d.x += (Math.random() - 0.5) * w.spread * 2;
+      d.y += (Math.random() - 0.5) * w.spread * 2;
+      d.z += (Math.random() - 0.5) * w.spread * 2;
+      d.normalize();
+    }
+    const impact = raymarchClient(eye, d, w.range);
+    projectiles.spawnTracer(muzzle, impact, color, w.bulletSpeed);
+  }
+  gunRecoil = 1;
+  gunFlashTimer = 0.055;
+}
+
 function sendInput(dt) {
   inputAccum += dt;
   if (inputAccum >= 1 / 20) {
     inputAccum = 0;
-    net.sendInput(self.x, self.z, self.yaw, self.squid);
+    net.sendInput(self.x, self.z, self.yaw, self.squid, self.weapon);
   }
 }
 
-function updateCamera(dt) {
+// First-person camera: sit at the eye and look along the aim direction.
+function updateCamera() {
   if (debugCam) return;
-  const fwd = new THREE.Vector3(Math.sin(self.yaw), 0, Math.cos(self.yaw));
-  const dist = 9.5, height = 6.5;
-  const desired = new THREE.Vector3(
-    self.x - fwd.x * dist,
-    self.groundY + height + self.y * 0.4,
-    self.z - fwd.z * dist
-  );
-  const k = 1 - Math.pow(0.0001, dt);
-  camPos.lerp(desired, k);
-  camera.position.copy(camPos);
-  camera.lookAt(self.x + fwd.x * 6, self.groundY + 1.2 + self.y * 0.4, self.z + fwd.z * 6);
+  const eye = eyeVec();
+  const aim = aimVec();
+  camera.position.copy(eye);
+  camera.lookAt(eye.x + aim.x, eye.y + aim.y, eye.z + aim.z);
 }
 
-// ---- ink projectiles (visual only) ----------------------------------------
+// ---- bullets (visible tracers) + ink splashes -----------------------------
 class Projectiles {
   constructor(scene) {
     this.scene = scene;
     this.list = [];
     this.splashes = [];
-    this.geo = new THREE.SphereGeometry(0.4, 10, 10);
+    this.geo = new THREE.SphereGeometry(0.18, 8, 8);
   }
-  spawn(fromX, fromZ, toX, toZ, color) {
-    const mat = new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.5 });
-    const mesh = new THREE.Mesh(this.geo, mat);
-    mesh.position.set(fromX, 1.1, fromZ);
+  // Fast tracer from `from` to `to` (THREE.Vector3).
+  spawnTracer(from, to, color, speed) {
+    const dist = Math.max(0.001, from.distanceTo(to));
+    const dur = Math.min(0.5, Math.max(0.03, dist / (speed || 90)));
+    const mesh = new THREE.Mesh(this.geo, new THREE.MeshBasicMaterial({ color }));
+    mesh.position.copy(from);
     this.scene.add(mesh);
-    this.list.push({ mesh, fromX, fromZ, toX, toZ, t: 0, dur: 0.18, color });
+    this.list.push({ mesh, from: from.clone(), to: to.clone(), t: 0, dur, color });
   }
   update(dt) {
     for (let i = this.list.length - 1; i >= 0; i--) {
@@ -308,13 +400,11 @@ class Projectiles {
       const u = p.t / p.dur;
       if (u >= 1) {
         this.scene.remove(p.mesh);
-        this.splash(p.toX, p.toZ, p.color);
+        this.splash(p.to, p.color);
         this.list.splice(i, 1);
         continue;
       }
-      p.mesh.position.x = p.fromX + (p.toX - p.fromX) * u;
-      p.mesh.position.z = p.fromZ + (p.toZ - p.fromZ) * u;
-      p.mesh.position.y = 1.1 + Math.sin(u * Math.PI) * 1.6;
+      p.mesh.position.lerpVectors(p.from, p.to, u);
     }
     for (let i = this.splashes.length - 1; i >= 0; i--) {
       const s = this.splashes[i];
@@ -325,13 +415,14 @@ class Projectiles {
       if (u >= 1) { this.scene.remove(s.mesh); this.splashes.splice(i, 1); }
     }
   }
-  splash(x, z, color) {
+  splash(pos, color) {
     const mesh = new THREE.Mesh(
-      new THREE.RingGeometry(0.3, 0.6, 16),
+      new THREE.RingGeometry(0.25, 0.5, 14),
       new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.6, side: THREE.DoubleSide })
     );
     mesh.rotation.x = -Math.PI / 2;
-    mesh.position.set(x, 0.08, z);
+    mesh.position.copy(pos);
+    mesh.position.y += 0.06;
     this.scene.add(mesh);
     this.splashes.push({ mesh, t: 0 });
   }

@@ -82,12 +82,9 @@ export class Net {
     });
     ch.on('broadcast', { event: 'shoot' }, ({ payload }) => {
       if (!this.isHost || !this.game) return;
-      const p = this.game.players.get(payload.id);
-      if (!p || p.dead) return;
-      if (Date.now() / 1000 - p.lastShot < SHOOT_COOLDOWN) return;
-      const fx = this.game.shoot(payload.id, payload.dx, payload.dz);
+      const fx = this.game.shoot(payload.id, payload);
       if (fx) {
-        const m = { id: payload.id, slot: p.slot, x: +p.x.toFixed(2), z: +p.z.toFixed(2), ex: +fx.endX.toFixed(2), ez: +fx.endZ.toFixed(2) };
+        const m = { id: payload.id, w: fx.w, ox: fx.ox, oy: fx.oy, oz: fx.oz, impacts: fx.impacts };
         this.send('shotfx', m);
         this.emitLocal('shotFx', m); // host renders other players' shots too
       }
@@ -125,20 +122,19 @@ export class Net {
     this.trackPresence();
   }
 
-  sendInput(x, z, a, squid) {
-    this.myInput = { x, z, a, sq: squid };
-    if (this.isHost && this.game) this.game.applyInput(this.clientId, x, z, a, squid);
-    else this.send('input', { id: this.clientId, x, z, a, sq: squid });
+  sendInput(x, z, a, squid, weapon) {
+    this.myInput = { x, z, a, sq: squid, w: weapon };
+    if (this.isHost && this.game) this.game.applyInput(this.clientId, x, z, a, squid, weapon);
+    else this.send('input', { id: this.clientId, x, z, a, sq: squid, w: weapon });
   }
 
-  sendShoot(dx, dz) {
+  // ray = { w, ox, oy, oz, dx, dy, dz }
+  sendShoot(ray) {
     if (this.isHost && this.game) {
-      const p = this.game.players.get(this.clientId);
-      if (!p || p.dead) return;
-      const fx = this.game.shoot(this.clientId, dx, dz);
-      if (fx) this.send('shotfx', { id: this.clientId, slot: p.slot, x: +p.x.toFixed(2), z: +p.z.toFixed(2), ex: +fx.endX.toFixed(2), ez: +fx.endZ.toFixed(2) });
+      const fx = this.game.shoot(this.clientId, ray);
+      if (fx) this.send('shotfx', { id: this.clientId, w: fx.w, ox: fx.ox, oy: fx.oy, oz: fx.oz, impacts: fx.impacts });
     } else {
-      this.send('shoot', { id: this.clientId, dx, dz });
+      this.send('shoot', { id: this.clientId, ...ray });
     }
   }
 
@@ -238,8 +234,8 @@ export class Net {
 
   // ---- host loops ----------------------------------------------------------
   hostTick() {
-    if (this.myInput) this.game.applyInput(this.clientId, this.myInput.x, this.myInput.z, this.myInput.a, this.myInput.sq);
-    for (const [id, inp] of this.remoteInputs) this.game.applyInput(id, inp.x, inp.z, inp.a, inp.sq);
+    if (this.myInput) this.game.applyInput(this.clientId, this.myInput.x, this.myInput.z, this.myInput.a, this.myInput.sq, this.myInput.w);
+    for (const [id, inp] of this.remoteInputs) this.game.applyInput(id, inp.x, inp.z, inp.a, inp.sq, inp.w);
     this.game.update();
   }
 
