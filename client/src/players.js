@@ -101,6 +101,14 @@ export class Players {
     for (const s of list) {
       seen.add(s.id);
       const p = this.ensure(s.id, s.sl, s.n, s.id === selfId);
+      // Rebuild avatar when slot (color) changes — e.g. after stealing identity
+      if (p.slot !== s.sl) {
+        this.scene.remove(p.group);
+        p.group = buildAvatar(s.sl, s.id === selfId, s.n);
+        p.group.position.copy(p.group.position);
+        this.scene.add(p.group);
+        p.slot = s.sl;
+      }
       p.target.x = s.x;
       p.target.z = s.z;
       p.target.a = s.a;

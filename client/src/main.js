@@ -174,6 +174,8 @@ net.on('state', (data) => {
   if (me) {
     serverSelfPos = { x: me.x, z: me.z };
     self.kills = me.k; self.deaths = me.de;
+    // Sync slot when we steal an identity (server assigns new slot)
+    if (me.sl && me.sl !== self.slot) self.slot = me.sl;
     if (me.d === 1) {
       if (!self.dead) { self.dead = true; onSelfDied(); } // keep last-alive cells
     } else {

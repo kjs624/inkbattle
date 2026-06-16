@@ -13,8 +13,8 @@ export const INFINITE = true;
 export const MATCH_DURATION = 0; // kept for import compatibility (unused)
 export const RESULT_DURATION = 0;
 
-export const BASE_SPEED = 13;
-export const SPEED_OWN_INK = 1.5;  // faster on your own ink
+export const BASE_SPEED = 6;
+export const SPEED_OWN_INK = 1.4;  // faster on your own ink
 export const SPEED_ENEMY_INK = 1;  // no slowdown anymore (kept for compat)
 
 export const SHOOT_RANGE = 15;

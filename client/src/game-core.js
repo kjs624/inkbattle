@@ -200,8 +200,47 @@ export class Game {
     victim.hp = 0;
     victim.respawnAt = now() + RESPAWN_DELAY;
     victim.deaths++;
-    if (killer && killer !== victim) killer.kills++;
-    this.clearInk(victim.slot); // death deletes your territory
+    if (killer && killer !== victim) {
+      killer.kills++;
+      this.stealIdentity(killer, victim);
+    } else {
+      this.clearInk(victim.slot);
+    }
+  }
+
+  // Killer takes victim's slot (color/identity). Killer's old territory
+  // repaints to victim's color; victim's territory is absorbed. Victim
+  // respawns with a fresh slot.
+  stealIdentity(killer, victim) {
+    const fromSlot = killer.slot;
+    const toSlot = victim.slot;
+
+    // Repaint killer's existing territory to victim's slot color
+    let moved = 0;
+    for (let i = 0; i < this.grid.length; i++) {
+      if (this.grid[i] === fromSlot) {
+        this.grid[i] = toSlot;
+        this.dirtyCells.set(i, toSlot);
+        moved++;
+      }
+    }
+
+    // Merge cell counts
+    const victimCells = this.counts.get(toSlot) || 0;
+    this.counts.delete(fromSlot);
+    this.counts.set(toSlot, moved + victimCells);
+
+    // Killer takes victim's slot; free killer's old slot
+    this.usedSlots.delete(fromSlot);
+    killer.slot = toSlot;
+    killer.cells = moved + victimCells;
+
+    // Give victim a brand-new slot for respawn
+    const newSlot = this.nextSlot();
+    this.usedSlots.add(newSlot);
+    victim.slot = newSlot;
+    victim.cells = 0;
+    // Victim's old territory stays — it's now killer's color
   }
 
   // ---- match loop ----------------------------------------------------------
