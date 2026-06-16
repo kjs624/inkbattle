@@ -103,6 +103,10 @@ export class Game {
     const len = Math.hypot(dirX, dirZ) || 1;
     dirX /= len; dirZ /= len;
 
+    // Ink right in front of the shooter too, so wall faces (not just the top)
+    // get covered — needed for squid wall-climbing.
+    this.paintBlob(p.x + dirX * 1.5, p.z + dirZ * 1.5, BRUSH_RADIUS, p.slot, p);
+
     for (let i = 1; i <= STREAK_BLOBS; i++) {
       const dist = (SHOOT_RANGE * i) / STREAK_BLOBS;
       const px = p.x + dirX * dist;

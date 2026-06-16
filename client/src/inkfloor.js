@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { EMPTY, slotColorRGB } from './constants.js';
+import { terrainHeight } from './terrain.js';
 
 // The painted floor. The grid state (one byte per cell) is rendered into a
 // DataTexture that's mapped onto a flat plane. Updating ink = writing pixels.
@@ -21,8 +22,16 @@ export class InkFloor {
     this.texture.minFilter = THREE.LinearFilter;
     this.texture.needsUpdate = true;
 
-    const geo = new THREE.PlaneGeometry(mapSize, mapSize, 1, 1);
+    // Subdivided plane displaced by the heightfield so ink wraps over hills.
+    const geo = new THREE.PlaneGeometry(mapSize, mapSize, grid, grid);
     geo.rotateX(-Math.PI / 2);
+    const pos = geo.attributes.position;
+    for (let i = 0; i < pos.count; i++) {
+      pos.setY(i, terrainHeight(pos.getX(i), pos.getZ(i)));
+    }
+    pos.needsUpdate = true;
+    geo.computeVertexNormals();
+
     const mat = new THREE.MeshStandardMaterial({
       map: this.texture,
       roughness: 0.85,
@@ -30,13 +39,7 @@ export class InkFloor {
     });
     this.mesh = new THREE.Mesh(geo, mat);
     this.mesh.receiveShadow = true;
-
-    // Faint grid lines overlaid for spatial reference.
-    const gridHelper = new THREE.GridHelper(mapSize, grid / 4, 0x222a44, 0x1a2038);
-    gridHelper.position.y = 0.02;
-    gridHelper.material.opacity = 0.25;
-    gridHelper.material.transparent = true;
-    this.gridHelper = gridHelper;
+    this.mesh.castShadow = true;
   }
 
   // Base (unpainted) checkerboard so the ground isn't flat grey.
@@ -105,6 +108,5 @@ export class InkFloor {
 
   addTo(scene) {
     scene.add(this.mesh);
-    scene.add(this.gridHelper);
   }
 }

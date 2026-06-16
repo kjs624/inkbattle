@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { slotColorHex } from './constants.js';
+import { terrainHeight } from './terrain.js';
 
 const BASE_SCALE = 0.6;   // smaller characters (v2)
 const SQUID_SCALE = 0.42; // squid form is smaller still
@@ -121,6 +122,7 @@ export class Players {
       const g = p.group;
       g.position.x += (p.target.x - g.position.x) * k;
       g.position.z += (p.target.z - g.position.z) * k;
+      g.position.y = terrainHeight(g.position.x, g.position.z);
       let da = p.target.a - g.rotation.y;
       while (da > Math.PI) da -= Math.PI * 2;
       while (da < -Math.PI) da += Math.PI * 2;

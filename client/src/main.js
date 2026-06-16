@@ -8,7 +8,9 @@ import { Players } from './players.js';
 import { DEFAULT_CONFIG, EMPTY, slotColorHex } from './constants.js';
 import {
   BASE_SPEED, SPEED_OWN_INK, SQUID_SPEED_MULT, MAX_HP, SHOOT_RANGE, SHOOT_COOLDOWN,
+  MAX_WALK_SLOPE,
 } from './gameconst.js';
+import { terrainHeight } from './terrain.js';
 
 const root = document.getElementById('app');
 const ui = new UI(root);
@@ -22,7 +24,7 @@ let gameOver = false;      // true once we die — freezes control, shows score
 
 // Local state for our own avatar (FFA: slot is our color/identity).
 const self = {
-  x: 0, z: 0, y: 0, vy: 0, yaw: 0,
+  x: 0, z: 0, y: 0, vy: 0, yaw: 0, groundY: 0,
   slot: 1, hp: MAX_HP, dead: false, squid: false,
   cells: 0, kills: 0, deaths: 0, rank: 0, totalPlayers: 0,
 };
@@ -223,11 +225,23 @@ function updateSelf(dt) {
     if (self.squid) mult *= SQUID_SPEED_MULT;
     const speed = BASE_SPEED * mult;
 
-    self.x += mx * speed * dt;
-    self.z += mz * speed * dt;
+    let nx = self.x + mx * speed * dt;
+    let nz = self.z + mz * speed * dt;
     const lim = cfg.MAP_SIZE / 2 - 0.6;
-    self.x = Math.max(-lim, Math.min(lim, self.x));
-    self.z = Math.max(-lim, Math.min(lim, self.z));
+    nx = Math.max(-lim, Math.min(lim, nx));
+    nz = Math.max(-lim, Math.min(lim, nz));
+
+    // Terrain: block ascending steep slopes ("walls") unless you're a squid
+    // standing on your own ink — then you climb.
+    const horiz = Math.hypot(nx - self.x, nz - self.z);
+    if (horiz > 1e-5) {
+      const slope = (terrainHeight(nx, nz) - terrainHeight(self.x, self.z)) / horiz;
+      const onOwnInkHere = floor.slotAtWorld(self.x, self.z) === self.slot;
+      const onOwnInkDest = floor.slotAtWorld(nx, nz) === self.slot;
+      const canClimb = self.squid && (onOwnInkHere || onOwnInkDest);
+      if (slope > MAX_WALK_SLOPE && !canClimb) { nx = self.x; nz = self.z; }
+    }
+    self.x = nx; self.z = nz;
 
     if (input.consumeJump() && self.y <= 0.001) self.vy = 7.5;
 
@@ -245,7 +259,8 @@ function updateSelf(dt) {
   self.y += self.vy * dt;
   if (self.y < 0) { self.y = 0; self.vy = 0; }
 
-  players.setSelfTransform(selfId, self.x, self.z, self.yaw, self.y, self.squid);
+  self.groundY = terrainHeight(self.x, self.z);
+  players.setSelfTransform(selfId, self.x, self.z, self.yaw, self.groundY + self.y, self.squid);
 }
 
 function sendInput(dt) {
@@ -262,13 +277,13 @@ function updateCamera(dt) {
   const dist = 9.5, height = 6.5;
   const desired = new THREE.Vector3(
     self.x - fwd.x * dist,
-    height + self.y * 0.4,
+    self.groundY + height + self.y * 0.4,
     self.z - fwd.z * dist
   );
   const k = 1 - Math.pow(0.0001, dt);
   camPos.lerp(desired, k);
   camera.position.copy(camPos);
-  camera.lookAt(self.x + fwd.x * 6, 1.2 + self.y * 0.4, self.z + fwd.z * 6);
+  camera.lookAt(self.x + fwd.x * 6, self.groundY + 1.2 + self.y * 0.4, self.z + fwd.z * 6);
 }
 
 // ---- ink projectiles (visual only) ----------------------------------------
@@ -339,8 +354,10 @@ if (import.meta.env.DEV) {
         cam: camera && camera.position.toArray().map((n) => +n.toFixed(1)),
         tris: renderer && renderer.info.render.triangles,
         slot: self.slot, hp: self.hp, squid: self.squid,
+        x: +self.x.toFixed(2), z: +self.z.toFixed(2), groundY: +self.groundY.toFixed(2),
       };
     },
+    teleport(x, z) { self.x = x; self.z = z; self.groundY = terrainHeight(x, z); return [x, z]; },
     look(yaw) { input.yaw = yaw; return yaw; },
     setSquid(v) { input.squid = !!v; return input.squid; },
     die() { if (!self.dead) { self.dead = true; onSelfDied(); } return 'died'; },
