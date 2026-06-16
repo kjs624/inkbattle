@@ -142,6 +142,15 @@ export class Net {
     }
   }
 
+  // Leave the room entirely (used on death so we don't auto-respawn).
+  leave() {
+    try { if (this.channel) this.channel.untrack(); } catch (e) { /* ignore */ }
+    try { if (this.supabase && this.channel) this.supabase.removeChannel(this.channel); } catch (e) { /* ignore */ }
+    this.inRoom = false;
+    this.subscribed = false;
+    if (this.isHost) this.resignHost();
+  }
+
   // ---- presence / roles ----------------------------------------------------
   trackPresence() {
     this.inRoom = true;

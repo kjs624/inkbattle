@@ -46,6 +46,20 @@ export class UI {
         <div class="center-banner hidden" id="banner"></div>
         <div class="conn"><span class="led" id="led"></span><span id="connText">연결 중</span></div>
       </div>
+
+      <div id="gameover" class="overlay hidden">
+        <div class="card">
+          <div class="phase-tag">GAME OVER</div>
+          <div class="result-team" id="goTitle">처치당했습니다!</div>
+          <div class="result-pct">최종 기록</div>
+          <div class="go-grid">
+            <div class="go-stat"><b id="goCells">0</b><span>최종 영역</span></div>
+            <div class="go-stat"><b id="goKills">0</b><span>처치</span></div>
+            <div class="go-stat"><b id="goRank">-</b><span>순위</span></div>
+          </div>
+          <button id="restartBtn" class="primary">처음으로</button>
+        </div>
+      </div>
     `;
 
     this.lobby = this.root.querySelector('#lobby');
@@ -60,6 +74,16 @@ export class UI {
     };
     this.startBtn.addEventListener('click', start);
     this.nameInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') start(); });
+
+    // Game Over -> back to the first page (fresh load).
+    this.root.querySelector('#restartBtn').addEventListener('click', () => location.reload());
+  }
+
+  showGameOver(s) {
+    this.root.querySelector('#goCells').textContent = s.cells;
+    this.root.querySelector('#goKills').textContent = s.kills;
+    this.root.querySelector('#goRank').textContent = s.total ? `${s.rank} / ${s.total}` : '-';
+    this.root.querySelector('#gameover').classList.remove('hidden');
   }
 
   onStart(cb) { this.onStartCb = cb; }

@@ -169,6 +169,11 @@ button.primary:disabled { filter: grayscale(0.6) brightness(0.7); cursor: defaul
 }
 .lb-row .rk { width: 14px; color: var(--muted); font-size: 11px; text-align: right; flex: none; }
 
+/* game over screen */
+.go-grid { display: flex; gap: 24px; justify-content: center; margin: 20px 0 24px; }
+.go-stat b { font-size: 30px; display: block; }
+.go-stat span { color: var(--muted); font-size: 12px; }
+
 /* top right: leaderboard */
 .leaderboard {
   position: absolute;

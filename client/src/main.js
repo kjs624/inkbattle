@@ -18,12 +18,13 @@ let cfg = { ...DEFAULT_CONFIG };
 let selfId = null;
 let started = false;
 let joined = false;
+let gameOver = false;      // true once we die — freezes control, shows score
 
 // Local state for our own avatar (FFA: slot is our color/identity).
 const self = {
   x: 0, z: 0, y: 0, vy: 0, yaw: 0,
   slot: 1, hp: MAX_HP, dead: false, squid: false,
-  cells: 0, kills: 0, deaths: 0,
+  cells: 0, kills: 0, deaths: 0, rank: 0, totalPlayers: 0,
 };
 let serverSelfPos = { x: 0, z: 0 };
 let lastFire = 0;
@@ -126,18 +127,20 @@ net.on('init', (data) => {
 });
 
 net.on('state', (data) => {
-  if (!joined) return;
+  if (!joined || gameOver) return;
   players.syncFromState(data.players, selfId);
   const me = data.players.find((p) => p.id === selfId);
   if (me) {
     serverSelfPos = { x: me.x, z: me.z };
-    self.cells = me.c; self.kills = me.k; self.deaths = me.de;
-    self.hp = me.h;
-    ui.setHp(self.hp, MAX_HP);
-    const nowDead = me.d === 1;
-    if (nowDead && !self.dead) onSelfDied();
-    if (!nowDead && self.dead) onSelfRespawn();
-    self.dead = nowDead;
+    self.kills = me.k; self.deaths = me.de;
+    if (me.d === 1) {
+      if (!self.dead) { self.dead = true; onSelfDied(); } // keep last-alive cells
+    } else {
+      self.cells = me.c;
+      self.hp = me.h;
+      ui.setHp(self.hp, MAX_HP);
+      self.dead = false;
+    }
   }
 });
 
@@ -165,18 +168,23 @@ function updateMatchUI(match) {
   const me = lb.find((p) => p.id === selfId);
   const rank = me ? lb.findIndex((p) => p.id === selfId) + 1 : 0;
   const coverage = me ? (me.cells / total) * 100 : 0;
+  self.rank = rank; self.totalPlayers = lb.length;
   ui.setTopStatus(coverage, rank, lb.length);
   ui.setLeaderboard(lb, selfId);
   if (me) ui.setSelfStats({ cells: me.cells, kills: me.kills, deaths: me.deaths });
 }
 
 function onSelfDied() {
-  ui.showBanner('<span class="big">💥</span>처치당했습니다! 내 영역이 사라집니다…');
-}
-function onSelfRespawn() {
-  self.x = serverSelfPos.x; self.z = serverSelfPos.z;
-  self.y = 0; self.vy = 0; self.hp = MAX_HP;
-  ui.hideBanner();
+  gameOver = true;
+  if (document.exitPointerLock) document.exitPointerLock();
+  net.leave(); // leave the room so we don't auto-respawn
+  ui.showGameOver({
+    cells: self.cells,
+    kills: self.kills,
+    deaths: self.deaths,
+    rank: self.rank,
+    total: self.totalPlayers,
+  });
 }
 
 // ---- main loop -------------------------------------------------------------
@@ -186,7 +194,7 @@ function loop(now) {
   const dt = Math.min(0.05, (now - prev) / 1000);
   prev = now;
 
-  if (joined) {
+  if (joined && !gameOver) {
     updateSelf(dt);
     sendInput(dt);
   }
@@ -204,8 +212,8 @@ function updateSelf(dt) {
 
   if (!self.dead) {
     const a = input.axes();
-    let mx = fwd.x * a.fwd + right.x * a.strafe;
-    let mz = fwd.y * a.fwd + right.y * a.strafe;
+    let mx = fwd.x * a.fwd - right.x * a.strafe;
+    let mz = fwd.y * a.fwd - right.y * a.strafe;
     const len = Math.hypot(mx, mz);
     if (len > 1) { mx /= len; mz /= len; }
 
@@ -335,6 +343,8 @@ if (import.meta.env.DEV) {
     },
     look(yaw) { input.yaw = yaw; return yaw; },
     setSquid(v) { input.squid = !!v; return input.squid; },
+    die() { if (!self.dead) { self.dead = true; onSelfDied(); } return 'died'; },
+    press(code, down = true) { dispatchEvent(new KeyboardEvent(down ? 'keydown' : 'keyup', { code })); },
     topDown() { debugCam = true; camera.position.set(0, 70, 0.01); camera.lookAt(0, 0, 0); return 'topdown'; },
     resumeCam() { debugCam = false; return 'resumed'; },
   };
